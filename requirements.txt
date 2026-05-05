@@ -1,0 +1,14 @@
+numpy
+opencv-python
+matplotlib
+scipy
+scikit-learn
+joblib
+astropy
+pillow
+
+# Packaging / building (optional, only needed for `python build_app.py`)
+pyinstaller
+
+# Dev / testing
+pytest

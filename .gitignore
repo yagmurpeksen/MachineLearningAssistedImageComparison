@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyd
+*.pyo
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.venv/
+venv/
+ENV/
+
+# OS / Editor
+.DS_Store
+Thumbs.db
+*.log
+
+# Build artifacts (PyInstaller / packaging)
+build/
+dist/
+*.spec
+
+# Data / outputs (keep out of git history)
+deeptao_data/
+fits_out/
+test_frames/
+tao/*.fits
+*.fits
+*.fit
+*.fts
+*.joblib
+
