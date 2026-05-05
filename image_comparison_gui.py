@@ -2,9 +2,19 @@ import cv2 as cv
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
-from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
-import tkinter as tk
-from tkinter import filedialog, messagebox
+try:
+    import tkinter as tk
+    from tkinter import filedialog, messagebox
+    from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+    TK_AVAILABLE = True
+except Exception:
+    # On some minimal Python installs (common on Linux CI), tkinter isn't present.
+    # Non-GUI functions in this module should remain importable for tests/CI.
+    TK_AVAILABLE = False
+    tk = None
+    filedialog = None
+    messagebox = None
+    FigureCanvasTkAgg = None
 from scipy.spatial import KDTree
 import os
 import sys
@@ -1762,6 +1772,11 @@ class ImageComparisonApp:
 
 
 def main():
+    if not TK_AVAILABLE:
+        raise RuntimeError(
+            "tkinter is not available. Install the OS package for tkinter "
+            "(e.g. python3-tk on Ubuntu/Debian) or run on a system with Tk support."
+        )
     root = tk.Tk()
     ImageComparisonApp(root)
     root.mainloop()
