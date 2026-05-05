@@ -2,6 +2,10 @@
 
 This application is a GUI tool for visualizing brightness differences between two images.
 
+## Requirements
+
+- Python: 3.11+ recommended
+
 ## Installation
 
 ### Recommended (virtual environment)
@@ -35,6 +39,13 @@ pip install -r requirements.txt
 1. Run the application:
 ```bash
 python image_comparison_gui.py
+```
+
+Notes:
+- On some Linux systems, `tkinter` may be missing by default. On Ubuntu/Debian you can install it with:
+
+```bash
+sudo apt-get update && sudo apt-get install -y python3-tk
 ```
 
 ### Option 2: Run as Standalone Application (.exe)
@@ -96,6 +107,12 @@ The application can be packaged as a standalone Windows executable (.exe) using 
 - **Method 2**: Run `build_app.bat`
 
 The executable will be created in the `dist` folder and can be distributed without requiring Python installation.
+
+## Data / model files
+
+- Some helper scripts in this repo expect local FITS files under folders like `test_frames/` or `deeptao_data/`.
+- The app can load FITS if `astropy` is installed.
+- Pretrained model file (if present): `transient_model.joblib`
 
 ## Repo hygiene (Git)
 

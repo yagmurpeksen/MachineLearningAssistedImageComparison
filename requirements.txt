@@ -1,14 +1,11 @@
-numpy
-opencv-python
-matplotlib
-scipy
-scikit-learn
-joblib
-astropy
-pillow
+numpy==2.4.4
+opencv-python==4.13.0.92
+matplotlib==3.10.8
+scipy==1.17.1
+scikit-learn==1.8.0
+joblib==1.5.3
+astropy==7.2.0
+pillow==10.2.0
 
 # Packaging / building (optional, only needed for `python build_app.py`)
-pyinstaller
-
-# Dev / testing
-pytest
+pyinstaller==6.19.0
