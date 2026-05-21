@@ -59,7 +59,7 @@ python image_comparison_gui.py
 
 ```bash
 python build_app.py
-# dist\StellarAnalysis.exe oluşur
+# dist\BrightnessComparison.exe oluşur
 ```
 
 > **Not:** `transient_model.joblib` dosyasının EXE ile aynı klasörde bulunması gerekir.
