@@ -1,0 +1,15 @@
+{
+  "name": "AT2020xnd (field 695, close-epoch pair)",
+  "ra": 8.050,
+  "dec": 36.760,
+  "disc_date": "2020-10-12",
+  "type": "Ibn",
+  "pre_date": "2020-09-22",
+  "pre_maglim": 21.46,
+  "pre_seeing": 1.634,
+  "post_date": "2020-10-14",
+  "post_maglim": 21.46,
+  "post_seeing": 1.665,
+  "gap_days": 22,
+  "notes": "Same field/CCD/quad (695/4/3), dark-sky pre (5 days after new moon). Direct WCS flux: 57.4x brightening confirmed at SN position."
+}

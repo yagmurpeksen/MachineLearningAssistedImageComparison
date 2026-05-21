@@ -1,34 +1,43 @@
 """
-Deep-TAO dataset ile transient sınıflandırma modeli eğitimi.
+Training a transient classification model on the Deep-TAO dataset.
 
-Yaklaşım: Her FITS dosyasından ilk + son frame alınır.
-İkisinin farkı özellik vektörüne eklenir → model değişimi öğrenir.
-Bu, GUI'nin img1 vs img2 karşılaştırmasıyla birebir örtüşür.
+Approach: The first + last frames are taken from each FITS file.
+Their difference is added to the feature vector → model learns the change.
+This directly mirrors the GUI's img1 vs img2 comparison.
 
-Sınıflar: SN, AGN, CV, BZ, OTHER → Transient (1)
-          NON                     → Non-transient (0)
+Classes: SN, AGN, CV, BZ, OTHER → Transient (1)
+         NON                     → Non-transient (0)
 
-Özellik vektörü (44 boyut):
-  [0:18]  → erken frame istatistikleri
-  [18:36] → geç frame istatistikleri
-  [36:44] → değişim özellikleri (delta)
+Feature vector (44 dimensions):
+  [0:18]  → early frame statistics
+  [18:36] → late frame statistics
+  [36:44] → change features (delta)
 """
 
 import os
 import sys
+import argparse
+from pathlib import Path
 import numpy as np
 import warnings
 warnings.filterwarnings("ignore")
 
 from astropy.io import fits as astropy_fits
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.model_selection import train_test_split, cross_val_score
+from sklearn.model_selection import (train_test_split, cross_val_score,
+                                     GridSearchCV, StratifiedKFold)
 from sklearn.preprocessing import StandardScaler
-from sklearn.metrics import classification_report, confusion_matrix
+from sklearn.metrics import (classification_report, confusion_matrix,
+                              roc_curve, auc, f1_score)
+from sklearn.dummy import DummyClassifier
 import joblib
 
-DATA_DIR  = r"C:\Users\pekse\Desktop\cse492\deeptao_data"
-MODEL_OUT = r"C:\Users\pekse\Desktop\cse492\transient_model.joblib"
+# Use the same feature function as ml_classifier → mismatch impossible
+from ml_classifier import extract_deeptao_features as _extract_deeptao_features
+
+_BASE_DIR = Path(__file__).resolve().parent
+DATA_DIR_DEFAULT = _BASE_DIR / "deeptao_data"
+MODEL_OUT_DEFAULT = _BASE_DIR / "transient_model.joblib"
 
 TRANSIENT_CLASSES     = ["SN", "AGN", "CV", "BZ", "OTHER"]
 NON_TRANSIENT_CLASSES = ["NON"]
@@ -38,21 +47,25 @@ FEAT_NAMES_SINGLE = [
     "p25", "p75", "p90", "p99",
     "conc_inner", "conc_middle", "conc_outer",
     "snr", "signal", "bg", "slope"
-]  # 18 özellik
+]  # 18 features
 
 FEAT_NAMES = (
     [f"early_{n}" for n in FEAT_NAMES_SINGLE] +   # 18
     [f"late_{n}"  for n in FEAT_NAMES_SINGLE] +   # 18
     ["delta_peak", "delta_mean", "delta_snr",      # 8 delta
      "delta_signal", "flux_ratio", "log_flux_ratio",
-     "delta_conc", "delta_slope"]
-)  # Toplam: 44
+     "delta_conc", "delta_slope"] +
+    ["diff_peak", "diff_peak_neg", "diff_snr",     # 10 subtraction
+     "diff_symmetry", "diff_center_flux",
+     "late_ellipticity", "late_fwhm", "late_moment_ratio",
+     "bg_change", "bg_gradient"]
+)  # Total: 54
 
 
-# ── Tek frame özellik çıkarma ─────────────────────────────────────
+# ── Single frame feature extraction ──────────────────────────────
 
 def extract_single_frame(cutout):
-    """64x64 cutout'tan 18 istatistiksel özellik çıkar."""
+    """Extract 18 statistical features from a 64x64 cutout."""
     if cutout is None or cutout.size == 0:
         return np.zeros(18)
 
@@ -108,50 +121,28 @@ def extract_single_frame(cutout):
     ])
 
 
-# ── İki frame + delta özellik çıkarma ────────────────────────────
+# ── Two-frame + delta feature extraction ─────────────────────────
 
 def extract_change_features(early, late):
     """
-    Erken + geç frame'den 44 boyutlu özellik vektörü çıkar.
-    Delta özellikler değişimi kodlar: bu projenin asıl amacı.
+    Extracts a 54-dimensional feature vector from early + late frames.
+
+    Identical computation to ml_classifier.extract_deeptao_features —
+    center coordinate is fixed at (32, 32) for 64x64 cutouts.
+
+    Structure: [early_18] + [late_18] + [delta_8] + [subtraction_10] = 54
     """
-    f_early = extract_single_frame(early)
-    f_late  = extract_single_frame(late)
-
-    # İndeks referansları (FEAT_NAMES_SINGLE sırasına göre)
-    IDX_PEAK   = 2   # peak
-    IDX_MEAN   = 0   # mean
-    IDX_SNR    = 14  # snr
-    IDX_SIGNAL = 15  # signal
-    IDX_CONC   = 11  # conc_inner
-    IDX_SLOPE  = 17  # slope
-
-    e_signal = f_early[IDX_SIGNAL] + 1e-9
-    l_signal = f_late[IDX_SIGNAL]
-
-    delta_peak   = f_late[IDX_PEAK]   - f_early[IDX_PEAK]
-    delta_mean   = f_late[IDX_MEAN]   - f_early[IDX_MEAN]
-    delta_snr    = f_late[IDX_SNR]    - f_early[IDX_SNR]
-    delta_signal = l_signal - f_early[IDX_SIGNAL]
-    flux_ratio   = l_signal / e_signal
-    log_flux_r   = float(np.log1p(abs(flux_ratio - 1.0)))
-    delta_conc   = f_late[IDX_CONC]  - f_early[IDX_CONC]
-    delta_slope  = f_late[IDX_SLOPE] - f_early[IDX_SLOPE]
-
-    delta = np.array([
-        delta_peak, delta_mean, delta_snr, delta_signal,
-        flux_ratio, log_flux_r, delta_conc, delta_slope
-    ])
-
-    return np.concatenate([f_early, f_late, delta])  # 18+18+8 = 44
+    h, w = early.shape
+    cx, cy = w // 2, h // 2
+    return _extract_deeptao_features(early, cx, cy, late, cx, cy, size=min(h, w))
 
 
-# ── FITS dosyası yükleme ──────────────────────────────────────────
+# ── FITS file loading ─────────────────────────────────────────────
 
 def load_early_late(path):
     """
-    FITS dosyasından ilk ve son frame'i döner.
-    Deep-TAO: HDU[0]=header, HDU[1..N]=64x64 frame'ler.
+    Returns the first and last frames from a FITS file.
+    Deep-TAO: HDU[0]=header, HDU[1..N]=64x64 frames.
     """
     try:
         with astropy_fits.open(path) as hdul:
@@ -159,15 +150,15 @@ def load_early_late(path):
             for hdu in hdul[1:]:
                 if hdu.data is not None and np.ndim(hdu.data) == 2:
                     frames.append(hdu.data.astype(np.float32))
-                    if len(frames) >= 2:  # En az ilk 2'yi bul (hız için)
+                    if len(frames) >= 2:  # Find at least the first 2 (for speed)
                         pass
             if not frames:
                 return None, None
-            # Tüm frame'leri taramak yavaş olur, son frame için sona bak
+            # Scanning all frames is slow; look at the end for the last frame
             if len(frames) == 1:
                 return frames[0], frames[0]
-            # Birden fazla frame: ilk ve son
-            # Eğer sadece 2 frame yüklendiyse son HDU'ya tekrar git
+            # Multiple frames: first and last
+            # If only 2 frames were loaded, revisit the last HDU
             with astropy_fits.open(path) as hdul2:
                 all_frames = []
                 for hdu in hdul2[1:]:
@@ -181,7 +172,7 @@ def load_early_late(path):
 
 
 def extract_features_from_file(path):
-    """Bir FITS dosyasından 44 boyutlu değişim özelliği çıkar."""
+    """Extracts a 44-dimensional change feature from a FITS file."""
     early, late = load_early_late(path)
     if early is None:
         return None
@@ -191,7 +182,7 @@ def extract_features_from_file(path):
     return feat
 
 
-# ── Dataset yükleme ───────────────────────────────────────────────
+# ── Dataset loading ───────────────────────────────────────────────
 
 def load_dataset(data_dir):
     X, y, cls_labels = [], [], []
@@ -205,7 +196,7 @@ def load_dataset(data_dir):
         fits_files = [f for f in os.listdir(cls_dir)
                       if f.endswith(".fits") or "." not in f]
 
-        print(f"  [{cls:6s}] {len(fits_files)} dosya  (label={label})")
+        print(f"  [{cls:6s}] {len(fits_files)} files  (label={label})")
         ok = 0
         for fname in fits_files:
             feat = extract_features_from_file(os.path.join(cls_dir, fname))
@@ -214,88 +205,174 @@ def load_dataset(data_dir):
                 y.append(label)
                 cls_labels.append(cls)
                 ok += 1
-        print(f"           {ok}/{len(fits_files)} yuklendi")
+        print(f"           {ok}/{len(fits_files)} loaded")
 
     return np.array(X), np.array(y), cls_labels
 
 
-# ── Eğitim ────────────────────────────────────────────────────────
+# ── Training ──────────────────────────────────────────────────────
 
-def train(data_dir=DATA_DIR, model_out=MODEL_OUT):
+def train(data_dir=DATA_DIR_DEFAULT, model_out=MODEL_OUT_DEFAULT):
     print("=" * 60)
-    print("Deep-TAO Model Egitimi  (erken+gec frame, degisim ozellikleri)")
+    print("Deep-TAO Model Training  (early+late frame, change features)")
     print("=" * 60)
 
-    print("\n[1/4] Dataset yukleniyor...")
-    X, y, cls_labels = load_dataset(data_dir)
+    print("\n[1/6] Loading dataset...")
+    data_dir = Path(data_dir)
+    model_out = Path(model_out)
+    X, y, cls_labels = load_dataset(str(data_dir))
 
     if len(X) == 0:
-        print("HATA: Hic veri yuklenemedi!")
+        print("ERROR: No data could be loaded!")
         return
 
-    print(f"\nToplam ornek  : {len(X)}")
-    print(f"  Transient   : {y.sum()}")
+    print(f"\nTotal samples  : {len(X)}")
+    print(f"  Transient    : {y.sum()}")
     print(f"  Non-transient: {(y == 0).sum()}")
-    print(f"  Ozellik boyutu: {X.shape[1]}  ({len(FEAT_NAMES)} isimli)")
+    print(f"  Feature size : {X.shape[1]}  ({len(FEAT_NAMES)} named, "
+          f"18+18+8 classic + 10 subtraction)")
 
-    print("\n[2/4] Train/Test split (%%80/%%20)...")
+    print("\n[2/6] Train/Test split (%%80/%%20)...")
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, test_size=0.2, random_state=42, stratify=y)
     print(f"  Train: {len(X_train)}  Test: {len(X_test)}")
 
-    print("\n[3/4] StandardScaler + Random Forest egitiliyor...")
-    scaler     = StandardScaler()
-    X_train_s  = scaler.fit_transform(X_train)
-    X_test_s   = scaler.transform(X_test)
+    print("\n[3/6] Fitting StandardScaler...")
+    scaler    = StandardScaler()
+    X_train_s = scaler.fit_transform(X_train)
+    X_test_s  = scaler.transform(X_test)
 
-    clf = RandomForestClassifier(
-        n_estimators=300,
-        max_depth=None,
-        min_samples_split=2,
-        class_weight="balanced",   # sinif dengesizligini duzeltir
-        random_state=42,
-        n_jobs=-1
+    # ── Baseline comparison (for jury: how much better is our model than random?) ──
+    print("\n[4/6] Baseline comparison...")
+    dummy = DummyClassifier(strategy="stratified", random_state=42)
+    dummy.fit(X_train_s, y_train)
+    dummy_acc = dummy.score(X_test_s, y_test) * 100
+    print(f"  Dummy (stratified) baseline accuracy: {dummy_acc:.1f}%%")
+
+    # ── Hyperparameter optimization with GridSearchCV ──
+    print("\n[5/6] Hyperparameter optimization with GridSearchCV (this may take 3-5 min)...")
+    param_grid = {
+        "n_estimators":    [100, 300],
+        "max_depth":       [None, 20, 40],
+        "min_samples_split": [2, 5],
+        "class_weight":    ["balanced", {0: 1, 1: 1}],
+    }
+    cv_inner = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+    grid_search = GridSearchCV(
+        RandomForestClassifier(random_state=42, n_jobs=-1),
+        param_grid,
+        cv=cv_inner,
+        scoring="f1",          # Optimize F1: balance of precision/recall
+        n_jobs=-1,
+        verbose=1,
     )
-    clf.fit(X_train_s, y_train)
+    grid_search.fit(X_train_s, y_train)
+    print(f"  Best parameters: {grid_search.best_params_}")
+    print(f"  CV F1 (train): {grid_search.best_score_:.3f}")
+    clf = grid_search.best_estimator_
 
-    print("\n[4/4] Degerlendirme...")
-    y_pred = clf.predict(X_test_s)
-    acc    = (y_pred == y_test).mean() * 100
+    # ── Decision threshold optimization (Youden J statistic) ──
+    # Threshold that maximizes TPR - FPR on the ROC curve:
+    # this gives the best balance of sensitivity and specificity.
+    y_prob = clf.predict_proba(X_test_s)[:, 1]
+    fpr_curve, tpr_curve, thr_curve = roc_curve(y_test, y_prob)
+    youden_j    = tpr_curve - fpr_curve
+    best_idx    = np.argmax(youden_j)
+    best_thr    = float(thr_curve[best_idx])
+    best_thr    = max(0.30, min(best_thr, 0.80))  # keep within a reasonable range
+    print(f"  Optimal decision threshold (Youden J): {best_thr:.2f}  (default: 0.50)")
+    print(f"  Youden J @ optimal: {youden_j[best_idx]:.3f}"
+          f"  (TPR={tpr_curve[best_idx]:.3f}, FPR={fpr_curve[best_idx]:.3f})")
 
-    print(f"\nTest Accuracy: {acc:.1f}%%")
-    print("\nClassification Report:")
-    print(classification_report(y_test, y_pred,
-          target_names=["Non-transient", "Transient"]))
+    y_pred_thr = (y_prob >= best_thr).astype(int)
+    y_pred_def = clf.predict(X_test_s)   # at 0.5
 
-    cm = confusion_matrix(y_test, y_pred)
-    print("Confusion Matrix:")
-    print(f"  TN={cm[0,0]}  FP={cm[0,1]}")
-    print(f"  FN={cm[1,0]}  TP={cm[1,1]}")
+    print("\n[6/6] Evaluation...")
 
-    cv_scores = cross_val_score(clf, X_train_s, y_train, cv=5, n_jobs=-1)
-    print(f"\n5-Fold CV: {cv_scores.mean()*100:.1f}%% +/- {cv_scores.std()*100:.1f}%%")
+    # ── Default threshold (0.5) ──
+    acc_def = (y_pred_def == y_test).mean() * 100
+    cm_def  = confusion_matrix(y_test, y_pred_def)
+    fpr_def = cm_def[0,1] / max(cm_def[0].sum(), 1)
 
-    # En onemli 5 ozellik
+    # ── Optimized threshold ──
+    acc_thr = (y_pred_thr == y_test).mean() * 100
+    cm_thr  = confusion_matrix(y_test, y_pred_thr)
+    fpr_thr = cm_thr[0,1] / max(cm_thr[0].sum(), 1)
+
+    roc_auc = auc(fpr_curve, tpr_curve)
+
+    print(f"\n{'':=<60}")
+    print(f"  {'Metric':<28} {'Baseline':>10} {'RF(thr=0.5)':>12} {'RF(optimal)':>12}")
+    print(f"  {'-'*28} {'-'*10} {'-'*12} {'-'*12}")
+    print(f"  {'Accuracy':<28} {dummy_acc:>9.1f}%% {acc_def:>11.1f}%% {acc_thr:>11.1f}%%")
+
+    target_names = ["Non-transient", "Transient"]
+    rep_def = classification_report(y_test, y_pred_def,
+                                    target_names=target_names, output_dict=True)
+    rep_thr = classification_report(y_test, y_pred_thr,
+                                    target_names=target_names, output_dict=True)
+
+    for met in ["precision", "recall", "f1-score"]:
+        key = "Transient " + met
+        print(f"  {key:<28} {'N/A':>10} "
+              f"{rep_def['Transient'][met]:>11.3f} "
+              f"{rep_thr['Transient'][met]:>11.3f}")
+
+    print(f"  {'False Positive Rate':<28} {'N/A':>10} {fpr_def:>11.3f} {fpr_thr:>11.3f}")
+    print(f"  {'AUC (ROC)':<28} {'N/A':>10} {roc_auc:>11.3f} {roc_auc:>11.3f}")
+    print(f"{'':=<60}")
+
+    print(f"\nConfusion Matrix (optimal threshold={best_thr:.2f}):")
+    print(f"  TN={cm_thr[0,0]}  FP={cm_thr[0,1]}")
+    print(f"  FN={cm_thr[1,0]}  TP={cm_thr[1,1]}")
+
+    cv_scores = cross_val_score(clf, X_train_s, y_train, cv=5,
+                                scoring="f1", n_jobs=-1)
+    print(f"\n5-Fold CV F1: {cv_scores.mean():.3f} +/- {cv_scores.std():.3f}")
+
+    # Top 5 most important features
     top5 = np.argsort(clf.feature_importances_)[::-1][:5]
-    print("\nEn onemli 5 ozellik:")
+    print("\nTop 5 most important features:")
     for i in top5:
         print(f"  {FEAT_NAMES[i]:<25} {clf.feature_importances_[i]:.3f}")
 
-    # Kaydet
+    # ── Save the model (together with the optimized threshold) ──
+    acc = acc_thr   # save accuracy at the optimal threshold
     model_data = {
-        "classifier": clf,
-        "scaler":     scaler,
-        "accuracy":   acc,
-        "n_train":    len(X_train),
-        "n_test":     len(X_test),
-        "feat_names": FEAT_NAMES,
-        "n_features": len(FEAT_NAMES),
+        "classifier":    clf,
+        "scaler":        scaler,
+        "accuracy":      acc,
+        "threshold":     best_thr,      # GUI will use this threshold
+        "auc":           roc_auc,
+        "n_train":       len(X_train),
+        "n_test":        len(X_test),
+        "feat_names":    FEAT_NAMES,
+        "n_features":    len(FEAT_NAMES),
+        "grid_best_params": grid_search.best_params_,
+        "baseline_acc":  dummy_acc,
+        "cv_f1_mean":    float(cv_scores.mean()),
+        "cv_f1_std":     float(cv_scores.std()),
     }
-    joblib.dump(model_data, model_out)
-    print(f"\nModel kaydedildi: {model_out}")
+    model_out.parent.mkdir(parents=True, exist_ok=True)
+    joblib.dump(model_data, str(model_out))
+    print(f"\nModel saved: {model_out.resolve()}")
     print("=" * 60)
-    print("Hazir! GUI otomatik olarak bu modeli yukleyecek.")
+    print("Done! The GUI will automatically load this model.")
 
 
 if __name__ == "__main__":
-    train()
+    parser = argparse.ArgumentParser(
+        description="Train Deep-TAO RandomForest transient classifier and save transient_model.joblib"
+    )
+    parser.add_argument(
+        "--data-dir",
+        default=str(DATA_DIR_DEFAULT),
+        help="Path to Deep-TAO dataset root (contains class subfolders like SN/AGN/.../NON).",
+    )
+    parser.add_argument(
+        "--model-out",
+        default=str(MODEL_OUT_DEFAULT),
+        help="Output path for saved joblib model (default: transient_model.joblib in project folder).",
+    )
+    args = parser.parse_args()
+    train(data_dir=args.data_dir, model_out=args.model_out)

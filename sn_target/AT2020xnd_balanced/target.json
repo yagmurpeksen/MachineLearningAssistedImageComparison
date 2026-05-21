@@ -1,0 +1,11 @@
+{
+  "name": "AT2020xnd_balanced",
+  "ra": 8.05,
+  "dec": 36.76,
+  "disc_date": "2020-10-12",
+  "pre_date": "2020-05-24",
+  "post_date": "2020-12-28",
+  "pre_maglim": 19.9778996,
+  "post_maglim": 19.9778996,
+  "dmaglim": 0.0
+}

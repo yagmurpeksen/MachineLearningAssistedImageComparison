@@ -1,122 +1,142 @@
-# Brightness Comparison Tool
+# Astronomical Transient Detection Tool
 
-This application is a GUI tool for visualizing brightness differences between two images.
+Astronomik görüntü çiftlerini karşılaştırarak **süpernova, nova, AGN parlaması** gibi geçici olayları (transient) otomatik olarak tespit eden masaüstü uygulaması.
 
-## Requirements
+## Projenin Özeti
 
-- Python: 3.11+ recommended
+İki farklı zamanda çekilmiş FITS görüntüsü yüklendiğinde sistem otomatik olarak:
 
-## Installation
+1. **Yıldız tespiti** — Her görüntüdeki kaynakları bulur
+2. **Astrometrik hizalama** — İki görüntüyü piksel düzeyinde hizalar
+3. **Eşleştirme** — Karşılıklı en yakın komşu yöntemiyle yıldızları eşler
+4. **Hareket tespiti** — IQR tabanlı istatistikle gerçek hareket eden cisimleri ayırt eder
+5. **Parlaklık değişimi** — Apertur fotometrisiyle anlamlı değişimleri ölçer
+6. **ML sınıflandırması** — Pre-trained Random Forest modeli ile her adayı transient / non-transient olarak sınıflandırır
 
-### Recommended (virtual environment)
+### Makine Öğrenmesi Pipeline'ı
+
+| Bileşen | Detay |
+|---------|-------|
+| Eğitim verisi | Deep-TAO veri seti (Gómez et al. 2020) — 2 991 FITS dosyası |
+| Sınıflar | SN · AGN · CV · BZ · OTHER → Transient (1) &nbsp;/&nbsp; NON → Non-transient (0) |
+| Özellik vektörü | **54 boyut**: 18 erken + 18 geç + 8 delta + 10 subtraction (image-differencing) |
+| Model | Random Forest — GridSearchCV ile optimize edilmiş |
+| AUC | **0.838** |
+| CV Accuracy | **79.0% ± 1.2%** (5-fold) |
+| Karar eşiği | Youden J istatistiği (ROC eğrisi optimumu) |
+| Baseline | Dummy sınıflandırıcı %55.1 — modelimiz %78+ |
+
+---
+
+## Gereksinimler
+
+- Python 3.11+
+- Bağımlılıklar: `requirements.txt`
+
+## Kurulum
 
 ```bash
 python -m venv .venv
-```
 
-Windows:
-
-```bash
+# Windows
 .venv\Scripts\activate
-```
 
-macOS/Linux:
-
-```bash
+# macOS / Linux
 source .venv/bin/activate
-```
 
-### Install required packages
-
-```bash
 pip install -r requirements.txt
 ```
 
-## Usage
+## Çalıştırma
 
-### Option 1: Run as Python Script
+### Seçenek 1 — Python ile
 
-1. Run the application:
 ```bash
 python image_comparison_gui.py
 ```
 
-Notes:
-- On some Linux systems, `tkinter` may be missing by default. On Ubuntu/Debian you can install it with:
+### Seçenek 2 — Standalone EXE (Windows)
 
-```bash
-sudo apt-get update && sudo apt-get install -y python3-tk
-```
-
-### Option 2: Run as Standalone Application (.exe)
-
-1. Build the executable:
 ```bash
 python build_app.py
-```
-   Or use the batch file:
-```bash
-build_app.bat
+# dist\StellarAnalysis.exe oluşur
 ```
 
-2. The executable will be created in the `dist` folder as `BrightnessComparison.exe`
-3. You can run `BrightnessComparison.exe` directly without Python installed
+> **Not:** `transient_model.joblib` dosyasının EXE ile aynı klasörde bulunması gerekir.
 
-## Tests
+---
 
-Run automated tests:
+## Modeli Eğitmek
 
 ```bash
-pytest -q
+# Varsayılan: ./deeptao_data/ klasöründen okur, transient_model.joblib yazar
+python train_model.py
+
+# Özel dizin belirtmek için:
+python train_model.py --data-dir /yol/deeptao --model-out ./model.joblib
 ```
 
-## How to Use
+Eğitim çıktısı — GridSearchCV, Youden J eşik optimizasyonu ve karşılaştırma tablosu:
 
-1. Select two images:
-   - Click "Select Image 1" to choose the first image
-   - Click "Select Image 2" to choose the second image
-   - JPEG format is recommended
+```
+  Metrik                     Baseline   RF(thr=0.5)  RF(optimal)
+  Accuracy                     55.1%       78.8%        78.1%
+  Transient precision            N/A        0.824        0.842
+  Transient recall               N/A        0.867        0.827
+  False Positive Rate            N/A        0.370        0.310
+  AUC (ROC)                      N/A        0.838        0.838
+```
 
-2. Compare images:
-   - Click "Compare" button
-   - Results will be displayed automatically
+---
 
-3. Save result (optional):
-   - Click "Save Result" to save the difference map
+## Test
 
-## Features
+```bash
+pytest -q           # tüm testler
+pytest tests/ -v    # ayrıntılı çıktı
+```
 
-- Load and compare two images
-- Automatic size matching
-- Normalization (corrects lighting differences)
-- Brightness difference visualization
-- Save results
+Test kapsamı (111 test):
+- `test_detection.py` — yıldız tespiti, hizalama, eşleştirme, fotometri
+- `test_ml_classifier.py` — özellik çıkarma, TransientClassifier, Isolation Forest
+- `test_pipeline_integration.py` — train↔inference uyumu, tam pipeline zinciri
+- `test_fits_loader.py` / `test_star_detection.py` / `test_change_detection.py` / `test_noise_robustness.py` — modül testleri
 
-## Supported Formats
+---
 
-- JPEG (.jpg, .jpeg) - Recommended
-- PNG (.png)
-- BMP (.bmp)
-- TIFF (.tiff, .tif)
+## Proje Yapısı
 
-## Building the Executable
+```
+cse492/
+├── image_comparison_gui.py   # Ana uygulama (Tkinter GUI)
+├── detection.py              # Yıldız tespiti, hizalama, fotometri
+├── ml_classifier.py          # Özellik çıkarma, TransientClassifier
+├── fits_loader.py            # FITS dosya yükleme
+├── photometry.py             # Fotometrik kalibrasyon (APASS)
+├── alerce_query.py           # ALeRCE ZTF broker sorgulama
+├── train_model.py            # Model eğitim scripti
+├── find_and_download_sn.py   # ZTF veri indirme yardımcısı
+├── validate_at2020xnd.py     # AT2020xnd tespit doğrulama scripti
+├── test_examples.py          # Komut satırı örnek testleri
+├── build_app.py              # PyInstaller EXE üretici
+├── test_ground_truth.json    # Sentetik test ground truth koordinatları
+├── transient_model.joblib    # Pre-trained model (54 özellik)
+├── deeptao_data/             # Deep-TAO eğitim verisi (SN/AGN/CV/BZ/OTHER/NON)
+├── sn_target/                # Gerçek ZTF test verisi (AT2020xnd vb.)
+├── moving_object/            # Hareketli cisim test görüntüleri
+├── report_figures/           # ML metrik grafikleri
+├── tests/                    # Pytest test paketi (111 test)
+└── requirements.txt
+```
 
-The application can be packaged as a standalone Windows executable (.exe) using PyInstaller:
+## Desteklenen Formatlar
 
-- **Method 1**: Run `python build_app.py`
-- **Method 2**: Run `build_app.bat`
+| Format | Destek |
+|--------|--------|
+| FITS (.fits) | Tam destek — astropy ile ham float verisi, WCS, fotometri |
+| PNG / JPEG / BMP / TIFF | Temel karşılaştırma (ML filtresi aktif, fotometri yok) |
 
-The executable will be created in the `dist` folder and can be distributed without requiring Python installation.
+## Kaynaklar
 
-## Data / model files
-
-- Some helper scripts in this repo expect local FITS files under folders like `test_frames/` or `deeptao_data/`.
-- The app can load FITS if `astropy` is installed.
-- Pretrained model file (if present): `transient_model.joblib`
-
-## Repo hygiene (Git)
-
-This project includes a `.gitignore` that excludes:
-- build artifacts (`build/`, `dist/`)
-- caches (`__pycache__/`, `.pytest_cache/`)
-- large data/output files (`*.fits`, `*.joblib`, `deeptao_data/`, `fits_out/`, `test_frames/`)
+- Gómez et al. (2020) — *"Deep learning for transient recognition and characterization of the Deep-TAO survey"*, A&A
+- Deep-TAO Dataset: [https://zenodo.org/record/3820679](https://zenodo.org/record/3820679)

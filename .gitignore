@@ -15,6 +15,9 @@ ENV/
 Thumbs.db
 *.log
 
+# Claude Code settings (local only)
+.claude/
+
 # Build artifacts (PyInstaller / packaging)
 build/
 dist/

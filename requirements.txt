@@ -5,7 +5,10 @@ scipy==1.17.1
 scikit-learn==1.8.0
 joblib==1.5.3
 astropy==7.2.0
+astroquery==0.4.10
 pillow==10.2.0
+alerce
+psutil==5.9.8
 
 # Packaging / building (optional, only needed for `python build_app.py`)
 pyinstaller==6.19.0
