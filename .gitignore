@@ -31,5 +31,5 @@ tao/*.fits
 *.fits
 *.fit
 *.fts
-*.joblib
+user_model.joblib
 
