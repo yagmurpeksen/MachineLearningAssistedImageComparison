@@ -136,11 +136,15 @@ def _lookup_sat_mags_from_catalog(sat_ra_list, sat_dec_list,
                 sb.add_votable_fields('flux(V)')
                 sb_result = sb.query_region(center,
                                             radius=field_radius_arcmin * u.arcmin)
-                if sb_result is not None and 'FLUX_V' in sb_result.colnames:
-                    sb_sc = SkyCoord(ra=sb_result['RA'], dec=sb_result['DEC'],
-                                     unit=(u.hourangle, u.deg))
-                    _cross_match(sb_sc,
-                                 np.array(sb_result['FLUX_V'], dtype=float))
+                if sb_result is not None:
+                    # column name varies by astroquery version: 'FLUX_V' or 'V'
+                    vcol = next((c for c in sb_result.colnames
+                                 if c in ('FLUX_V', 'V')), None)
+                    if vcol:
+                        sb_sc = SkyCoord(ra=sb_result['RA'], dec=sb_result['DEC'],
+                                         unit=(u.hourangle, u.deg))
+                        _cross_match(sb_sc,
+                                     np.array(sb_result[vcol], dtype=float))
             except Exception:
                 pass
 
