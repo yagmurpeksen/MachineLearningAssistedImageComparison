@@ -15,7 +15,6 @@ Feature vector (44 dimensions):
 """
 
 import os
-import sys
 import argparse
 from pathlib import Path
 import numpy as np
@@ -28,7 +27,7 @@ from sklearn.model_selection import (train_test_split, cross_val_score,
                                      GridSearchCV, StratifiedKFold)
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import (classification_report, confusion_matrix,
-                              roc_curve, auc, f1_score)
+                              roc_curve, auc)
 from sklearn.dummy import DummyClassifier
 import joblib
 
@@ -39,7 +38,6 @@ _BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR_DEFAULT = _BASE_DIR / "deeptao_data"
 MODEL_OUT_DEFAULT = _BASE_DIR / "transient_model.joblib"
 
-TRANSIENT_CLASSES     = ["SN", "AGN", "CV", "BZ", "OTHER"]
 NON_TRANSIENT_CLASSES = ["NON"]
 
 FEAT_NAMES_SINGLE = [
@@ -60,65 +58,6 @@ FEAT_NAMES = (
      "late_ellipticity", "late_fwhm", "late_moment_ratio",
      "bg_change", "bg_gradient"]
 )  # Total: 54
-
-
-# ── Single frame feature extraction ──────────────────────────────
-
-def extract_single_frame(cutout):
-    """Extract 18 statistical features from a 64x64 cutout."""
-    if cutout is None or cutout.size == 0:
-        return np.zeros(18)
-
-    data = cutout.astype(float)
-    flat = data.flatten()
-    if np.all(flat == 0):
-        return np.zeros(18)
-
-    mean = np.mean(flat)
-    std  = np.std(flat) + 1e-9
-    peak = np.max(flat)
-    mn   = np.min(flat)
-    med  = np.median(flat)
-    skew = float(np.mean(((flat - mean) / std) ** 3))
-    kurt = float(np.mean(((flat - mean) / std) ** 4)) - 3.0
-    p25  = float(np.percentile(flat, 25))
-    p75  = float(np.percentile(flat, 75))
-    p90  = float(np.percentile(flat, 90))
-    p99  = float(np.percentile(flat, 99))
-
-    h, w   = data.shape
-    cy, cx = h // 2, w // 2
-    yy, xx = np.mgrid[0:h, 0:w]
-    dist   = np.sqrt((xx - cx)**2 + (yy - cy)**2)
-
-    inner  = float(data[dist <= 8].sum())
-    middle = float(data[(dist > 8) & (dist <= 16)].sum())
-    outer  = float(data[dist > 16].sum())
-    total  = inner + middle + outer + 1e-9
-    conc_inner  = inner  / total
-    conc_middle = middle / total
-    conc_outer  = outer  / total
-
-    bg_mask = dist > 20
-    bg      = float(np.median(data[bg_mask])) if bg_mask.any() else 0.0
-    bg_std  = float(np.std(data[bg_mask])) + 1e-9 if bg_mask.any() else 1.0
-    n_inner = int((dist <= 8).sum())
-    signal  = max(inner - bg * n_inner, 0.0)
-    snr     = signal / (bg_std * np.sqrt(n_inner) + 1e-9)
-
-    r_bins  = np.arange(0, 32, 4)
-    profile = []
-    for r0, r1 in zip(r_bins[:-1], r_bins[1:]):
-        ring = data[(dist >= r0) & (dist < r1)]
-        profile.append(float(np.mean(ring)) if ring.size > 0 else 0.0)
-    slope = float(np.polyfit(range(len(profile)), profile, 1)[0]) if len(profile) > 1 else 0.0
-
-    return np.array([
-        mean, std, peak, mn, med, skew, kurt,
-        p25, p75, p90, p99,
-        conc_inner, conc_middle, conc_outer,
-        snr, signal, bg, slope
-    ])
 
 
 # ── Two-frame + delta feature extraction ─────────────────────────

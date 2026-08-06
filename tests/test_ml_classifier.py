@@ -148,7 +148,7 @@ pytestmark_ml = pytest.mark.skipif(not ML_AVAILABLE,
 def test_classifier_starts_untrained():
     clf = TransientClassifier()
     assert not clf.is_trained
-    assert clf.n_samples == 0
+    assert len(clf._samples) == 0
 
 
 @pytest.mark.skipif(not ML_AVAILABLE, reason="scikit-learn not installed")
@@ -211,7 +211,7 @@ def test_classifier_save_load_roundtrip(tmp_path):
     clf2 = TransientClassifier()
     clf2.load(path)
     assert clf2.is_trained
-    assert clf2.n_samples == clf.n_samples
+    assert len(clf2._samples) == len(clf._samples)
 
     # Should produce the same prediction for the same input
     fv_test = rng.random(25).astype(np.float32)

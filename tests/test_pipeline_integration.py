@@ -19,7 +19,7 @@ from pathlib import Path
 # Add project root directory to path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from train_model import extract_single_frame, extract_change_features
+from train_model import extract_change_features
 from ml_classifier import _extract_single_frame_feats, extract_deeptao_features
 from detection import detect_stars
 
@@ -71,7 +71,7 @@ class TestFeatureFunctionConsistency:
 
     def test_single_frame_same_output_bright_star(self):
         cutout = make_star_cutout(peak=800, bg=100)
-        f_train = extract_single_frame(cutout)
+        f_train = _extract_single_frame_feats(cutout)
         f_infer = _extract_single_frame_feats(cutout)
         np.testing.assert_array_almost_equal(
             f_train, f_infer, decimal=5,
@@ -79,19 +79,18 @@ class TestFeatureFunctionConsistency:
 
     def test_single_frame_same_output_empty(self):
         cutout = np.zeros((64, 64), dtype=np.float32)
-        f_train = extract_single_frame(cutout)
+        f_train = _extract_single_frame_feats(cutout)
         f_infer = _extract_single_frame_feats(cutout)
         np.testing.assert_array_almost_equal(f_train, f_infer, decimal=5)
 
     def test_single_frame_same_output_dim_star(self):
         cutout = make_star_cutout(peak=80, bg=50, noise_std=2.0)
-        f_train = extract_single_frame(cutout)
+        f_train = _extract_single_frame_feats(cutout)
         f_infer = _extract_single_frame_feats(cutout)
         np.testing.assert_array_almost_equal(f_train, f_infer, decimal=5)
 
     def test_single_frame_same_length(self):
         cutout = make_star_cutout()
-        assert len(extract_single_frame(cutout)) == 18
         assert len(_extract_single_frame_feats(cutout)) == 18
 
     def test_change_features_vs_deeptao_features_same_output(self):

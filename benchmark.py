@@ -15,7 +15,6 @@ import time
 import threading
 import statistics
 import warnings
-import traceback
 
 import numpy as np
 import psutil
@@ -66,17 +65,32 @@ class ResourceMonitor:
 # ── FITS pipeline benchmark ───────────────────────────────────────────────────
 
 def bench_fits_pipeline(fits_pairs, runs=3):
-    """Her FITS çifti için pipeline süresini ve kaynak kullanımını ölçer."""
+    """GUI ile aynı akışı kullanarak pipeline süresini ölçer."""
     from fits_loader import load_fits_image
     from detection import (
         detect_stars_dao, star_affine_align, match_stars_mutual,
-        detect_brightness_outliers, filter_stars_by_snr, normalize_pair_joint,
-        filter_stars_from_border, match_detection_depth, DAO_AVAILABLE,
+        detect_brightness_outliers, detect_moving_outliers,
+        filter_stars_by_snr, normalize_pair_joint,
+        filter_stars_from_border, match_detection_depth,
     )
     import cv2 as cv
 
-    if not DAO_AVAILABLE:
-        print("  [UYARI] DAOStarFinder yok, blob tespiti kullanılacak")
+    # GUI varsayılan parametreleri
+    DAO_FWHM    = 3.0
+    DAO_SIGMA   = 5.0
+    MIN_AREA    = 3
+    MAX_AREA    = 500
+    COARSE_R    = 50
+    MATCH_R     = 5
+    R_INNER     = 4
+    R_OUTER     = 8
+    MIN_FLUX    = 50.0
+    FLUX_THR    = 1.5
+    MIN_SNR     = 1.0
+    IQR_MULT    = 3.0
+    MIN_RES     = 1.5
+    MAX_MOV     = 0.02
+    BORDER      = 10
 
     results = []
     for label, p1, p2 in fits_pairs:
@@ -91,36 +105,52 @@ def bench_fits_pipeline(fits_pairs, runs=3):
         for _ in range(runs):
             t0 = time.perf_counter()
 
-            img1, _, _, _ = load_fits_image(p1)
-            img2, _, _, _ = load_fits_image(p2)
+            img1, _, flux1, _ = load_fits_image(p1)
+            img2, _, flux2, _ = load_fits_image(p2)
 
             h, w = img1.shape[:2]
-            img2r = cv.resize(img2, (w, h))
+            img2r  = cv.resize(img2, (w, h))
+            flux2r = cv.resize(flux2.astype(np.float32), (w, h))
             img1n, img2n = normalize_pair_joint(img1, img2r)
 
-            flux1 = img1.astype(np.float32)
-            flux2 = img2r.astype(np.float32)
+            flux1 = flux1.astype(np.float32)
 
-            s1 = detect_stars_dao(flux1, fwhm=3.0, sigma_thresh=5.0)
-            s2 = detect_stars_dao(flux2, fwhm=3.0, sigma_thresh=5.0)
+            # ── DAO alignment (GUI ile aynı: önce DAO ile hizala) ──
+            dao1 = detect_stars_dao(flux1, fwhm=DAO_FWHM, sigma_thresh=DAO_SIGMA,
+                                    min_area=MIN_AREA, max_area=MAX_AREA)
+            dao2 = detect_stars_dao(flux2r, fwhm=DAO_FWHM, sigma_thresh=DAO_SIGMA,
+                                    min_area=MIN_AREA, max_area=MAX_AREA)
 
-            s1 = filter_stars_from_border(s1, w, h, 50)
-            s2 = filter_stars_from_border(s2, w, h, 50)
-            s1, s2 = match_detection_depth(s1, s2, max_ratio=3.0)
+            img2_aligned, H, _ = star_affine_align(
+                img1n, img2n, pct=97, coarse_radius=COARSE_R,
+                stars1=dao1 if len(dao1) >= 4 else None,
+                stars2=dao2 if len(dao2) >= 4 else None)
 
-            s1f, _, _ = filter_stars_by_snr(s1, img1n, 1.0, 4, 8)
-            s2f, _, _ = filter_stars_by_snr(s2, img2n, 1.0, 4, 8)
+            # ── DAO star detection on aligned images ──
+            flux2_aligned = cv.warpAffine(flux2r, H, (w, h),
+                flags=cv.INTER_LINEAR, borderMode=cv.BORDER_CONSTANT) if H is not None else flux2r
 
-            _, H, _ = star_affine_align(img1n, img2n, stars1=s1f, stars2=s2f,
-                                        coarse_radius=25)
+            stars1_raw = detect_stars_dao(flux1, fwhm=DAO_FWHM, sigma_thresh=DAO_SIGMA,
+                                          min_area=MIN_AREA, max_area=MAX_AREA)
+            stars2_raw = detect_stars_dao(flux2_aligned, fwhm=DAO_FWHM, sigma_thresh=DAO_SIGMA,
+                                          min_area=MIN_AREA, max_area=MAX_AREA)
 
-            matched, um1, um2 = match_stars_mutual(s1f, s2f, max_distance=8)
+            stars1_raw = filter_stars_from_border(stars1_raw, w, h, BORDER)
+            stars2_raw = filter_stars_from_border(stars2_raw, w, h, BORDER)
+            stars1_raw, stars2_raw = match_detection_depth(stars1_raw, stars2_raw, max_ratio=3.0)
+
+            stars1, _, _ = filter_stars_by_snr(stars1_raw, img1n, MIN_SNR, R_INNER, R_OUTER)
+            stars2, _, _ = filter_stars_by_snr(stars2_raw, img2_aligned, MIN_SNR, R_INNER, R_OUTER)
+
+            matched, unm1, unm2 = match_stars_mutual(stars1, stars2, max_distance=MATCH_R)
+
+            detect_moving_outliers(matched, iqr_multiplier=IQR_MULT,
+                                   min_residual_px=MIN_RES, max_moving_frac=MAX_MOV)
 
             detect_brightness_outliers(
-                matched, s1f, s2f, flux1, flux2,
-                r_inner=4, r_outer=8,
-                flux_ratio_thr=1.5, min_flux=50.0,
-            )
+                matched, stars1, stars2, flux1, flux2_aligned,
+                r_inner=R_INNER, r_outer=R_OUTER,
+                flux_ratio_thr=FLUX_THR, min_flux=MIN_FLUX)
 
             times.append(time.perf_counter() - t0)
 
@@ -336,9 +366,9 @@ def main():
 
     # Test çiftleri
     fits_pairs = [
-        ("AT2020xnd\n(22-gün)",
-         "sn_target/AT2020xnd_short/pre_sn.fits",
-         "sn_target/AT2020xnd_short/post_sn.fits"),
+        ("AT2020xnd\n(balanced)",
+         "sn_target/AT2020xnd_balanced/pre_sn.fits",
+         "sn_target/AT2020xnd_balanced/post_sn.fits"),
         ("Hareketli\nCisim",
          "moving_object/epoch1.fits",
          "moving_object/epoch2.fits"),

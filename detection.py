@@ -412,7 +412,7 @@ def detect_moving_from_unmatched(stars1, stars2, unm1, unm2,
     results = []
     used_unm2 = set()
 
-    for idx1, i in enumerate(unm1):
+    for i in unm1:
         cx1, cy1 = float(stars1[i][0]), float(stars1[i][1])
         # Expected epoch2 position using global shift
         exp_x = cx1 + med_dx

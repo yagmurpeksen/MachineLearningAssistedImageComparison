@@ -50,11 +50,14 @@ def open_label_window(app):
     info_holder = tk.Frame(card, bg="#0f0f23")
     info_holder.pack(pady=4)
 
+    win._last_canvas = None  # canvas referansını burada sakla (GC thread safety)
+
     # ── Bottom buttons ────────────────────────────────────────────
     btn_bar = tk.Frame(win, bg="#1a1a2e")
     btn_bar.pack(fill=tk.X, padx=16, pady=10)
 
     def _render(idx):
+        win._last_canvas = None  # eski canvas'ı main thread'de serbest bırak
         for w in img_holder.winfo_children():  w.destroy()
         for w in info_holder.winfo_children(): w.destroy()
 
@@ -109,6 +112,7 @@ def open_label_window(app):
             cv_widget.draw()
             cv_widget.get_tk_widget().pack()
             plt.close(fig)
+            win._last_canvas = cv_widget  # referansı tut, background thread GC etmesin
         except Exception:
             tk.Label(img_holder, text="Image could not be loaded",
                      bg="#0f0f23", fg="gray").pack()
@@ -169,6 +173,7 @@ def open_label_window(app):
 
         next_idx = idx + 1
         if next_idx >= n_total:
+            win._last_canvas = None          # canvas'ı main thread'de serbest bırak
             for w in img_holder.winfo_children():  w.destroy()
             for w in info_holder.winfo_children(): w.destroy()
             t = sum(1 for v in labeled.values() if v == 1)
@@ -275,15 +280,23 @@ def train_model(app):
             "Training cannot proceed without stationary stars either.")
         return
 
+    from image_comparison_gui import USER_MODEL_PATH
+
+    app.btn_train.config(state=tk.DISABLED)
+    app.root.update()
+
     try:
         classifier.train()
     except Exception as e:
-        messagebox.showerror("Training Error", str(e)); return
+        app.btn_train.config(state=tk.NORMAL)
+        messagebox.showerror("Training Error", str(e))
+        return
 
-    acc = classifier.cross_val_accuracy()
+    app.btn_train.config(state=tk.NORMAL)
+
+    acc     = classifier.cross_val_accuracy()
     acc_str = f"{acc*100:.1f}%" if acc is not None else "N/A (too few samples for CV)"
 
-    from image_comparison_gui import USER_MODEL_PATH
     try:
         classifier.save(str(USER_MODEL_PATH))
         save_msg = f"\nSaved: {USER_MODEL_PATH.name}"
@@ -292,6 +305,7 @@ def train_model(app):
 
     auto_msg = (f"\n(+{auto_artifact} artifacts added automatically — stationary stars)"
                 if auto_artifact > 0 else "")
+
     messagebox.showinfo(
         "Model Trained",
         f"Model trained!\n"

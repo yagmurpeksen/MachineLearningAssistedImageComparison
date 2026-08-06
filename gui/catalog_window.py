@@ -106,13 +106,21 @@ def _build_catalog_data(app, job):
                     dec_str = f"{sign}{dec_d:02d}:{dec_m:02d}:{dec_s:04.1f}"
                     ra_dec[k] = (ra_str, dec_str)
                 has_wcs = True
-        except Exception:
-            pass
+        except Exception as _wcs_err:
+            print(f"[Catalog] WCS pixel→sky failed: {_wcs_err}")
 
+    # APASS calibration: runs if header has WCS keywords, independent of
+    # whether the pixel→sky conversion for individual stars succeeded.
+    has_wcs_header = (hdr is not None and FITS_AVAILABLE and
+                      any(k in hdr for k in ("CRVAL1", "CTYPE1", "CD1_1")))
     zp, n_cal = None, 0
-    if hdr is not None and FITS_AVAILABLE and has_wcs:
+    if has_wcs_header:
         _catalog_set_status(app, "Star catalog: APASS query (~25s max)...", "#f39c12")
-        zp, n_cal = _try_photometry_zp(hdr, stars, flux_img, ri, ro)
+        # Use clean fixed parameters for APASS calibration regardless of user settings
+        apass_img = cv.normalize(flux_img, None, 0, 255, cv.NORM_MINMAX).astype(np.uint8)
+        apass_raw = detect_stars(apass_img, pct=97, min_area=3, max_area=500, min_peak=20)
+        apass_stars, _, _ = filter_stars_by_snr(apass_raw, apass_img, 3.0, ri, ro)
+        zp, n_cal = _try_photometry_zp(hdr, apass_stars if apass_stars else stars, flux_img, ri, ro)
 
     catalog = []
     sat_indices = []
@@ -234,7 +242,7 @@ def _show_catalog_window(app, img_n, catalog, title, zp=None, n_cal=0,
 
     win = tk.Toplevel(app.root)
     win.title(f"Star Catalog — {title}  ({len(catalog)} stars)")
-    win.geometry("1300x700" if has_vmag else "1150x680")
+    win.geometry("1550x700" if has_vmag else "1400x680")
     win.configure(bg="#1a1a2e")
 
     # ── Info bar ──────────────────────────────────────────────────
@@ -399,7 +407,7 @@ def _show_catalog_window(app, img_n, catalog, title, zp=None, n_cal=0,
         for txt in labels.values():
             txt.set_visible(False)
         if star_id in patches:
-            circ, orig_col, _ = patches[star_id]
+            circ, _, _ = patches[star_id]
             circ.set_visible(True)
             circ.set_edgecolor("red")
             circ.set_linewidth(2.5)

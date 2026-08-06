@@ -6,8 +6,8 @@ scikit-learn==1.8.0
 joblib==1.5.3
 astropy==7.2.0
 astroquery==0.4.10
-pillow==10.2.0
-alerce
+photutils==2.3.0
+requests==2.32.3
 psutil==5.9.8
 
 # Packaging / building (optional, only needed for `python build_app.py`)

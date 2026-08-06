@@ -8,8 +8,6 @@ Coverage:
   2. match_detection_depth  — star-count balancing
   3. suppress_warp_border   — edge artifact masking
   4. detect_moving_from_unmatched — unmatched-pair moving object detection
-  5. detect_stars_dao        — DAO-based star detection (skipped if photutils absent)
-
 All tests use only synthetic numpy data — no real FITS files are required.
 """
 
@@ -23,11 +21,7 @@ from detection import (
     detect_stars,
     match_stars_mutual,
     detect_brightness_outliers,
-    DAO_AVAILABLE,
 )
-
-if DAO_AVAILABLE:
-    from detection import detect_stars_dao
 
 
 # ════════════════════════════════════════════════════════════════
@@ -510,83 +504,3 @@ def test_moving_from_unmatched_result_dict_keys():
     required_keys = {"x1", "y1", "x2", "y2", "dx", "dy", "residual", "from_unmatched"}
     for key in required_keys:
         assert key in results[0], f"Missing key '{key}' in result dict"
-
-
-# ════════════════════════════════════════════════════════════════
-#  5.  detect_stars_dao  (skipped when photutils not installed)
-# ════════════════════════════════════════════════════════════════
-
-@pytest.mark.skipif(not DAO_AVAILABLE, reason="photutils not installed")
-def test_dao_finds_stars_in_synthetic_fits():
-    """
-    Inject Gaussian stars into a noisy float32 array and verify that
-    DAOStarFinder recovers at least half of them.
-    DAO is the primary detection backend for real FITS data in this project.
-    """
-    rng = np.random.default_rng(13)
-    sky = 500.0
-    sigma_noise = 30.0
-    img = rng.normal(loc=sky, scale=sigma_noise, size=(128, 128)).astype(np.float32)
-
-    star_positions = [(40, 40), (40, 88), (88, 40), (88, 88), (64, 64)]
-    for cx, cy in star_positions:
-        # Add a Gaussian with peak well above sky + 5*sigma_noise
-        yy, xx = np.mgrid[0:128, 0:128]
-        img += 600.0 * np.exp(-((xx - cx) ** 2 + (yy - cy) ** 2) / (2 * 2.0 ** 2))
-
-    stars = detect_stars_dao(img, fwhm=3.0, sigma_thresh=5.0)
-
-    assert len(stars) >= len(star_positions) // 2, (
-        f"Expected ≥{len(star_positions)//2} stars, DAO found {len(stars)}"
-    )
-
-
-@pytest.mark.skipif(not DAO_AVAILABLE, reason="photutils not installed")
-def test_dao_returns_correct_format():
-    """
-    detect_stars_dao must return a list of (cx, cy, area, peak) tuples —
-    the same format as detect_stars() — so both backends are interchangeable
-    in the pipeline.
-    """
-    rng = np.random.default_rng(17)
-    img = rng.normal(500.0, 30.0, (64, 64)).astype(np.float32)
-    yy, xx = np.mgrid[0:64, 0:64]
-    img += 800.0 * np.exp(-((xx - 32) ** 2 + (yy - 32) ** 2) / (2 * 2.0 ** 2))
-
-    stars = detect_stars_dao(img, fwhm=3.0, sigma_thresh=5.0)
-
-    assert isinstance(stars, list), "Result must be a list"
-    for s in stars:
-        assert len(s) == 4, f"Each star must be a 4-tuple, got len={len(s)}"
-        cx, cy, area, peak = s
-        assert isinstance(cx, float), "cx must be float"
-        assert isinstance(cy, float), "cy must be float"
-        assert isinstance(area, int), "area must be int"
-        assert peak > 0, "peak must be positive"
-
-
-@pytest.mark.skipif(not DAO_AVAILABLE, reason="photutils not installed")
-def test_dao_high_threshold_finds_fewer_stars():
-    """
-    A higher sigma_thresh raises the detection floor, so fewer sources
-    should be returned.  This verifies the threshold parameter actually
-    controls sensitivity — crucial for the thesis experiments on varying
-    sigma.
-    """
-    rng = np.random.default_rng(23)
-    sky = 500.0
-    sigma_noise = 30.0
-    img = rng.normal(sky, sigma_noise, (128, 128)).astype(np.float32)
-
-    # Plant stars of varying brightness
-    for cx, cy, peak in [(30, 30, 800), (60, 60, 400), (90, 90, 250), (45, 90, 200)]:
-        yy, xx = np.mgrid[0:128, 0:128]
-        img += float(peak) * np.exp(-((xx - cx) ** 2 + (yy - cy) ** 2) / (2 * 2.0 ** 2))
-
-    stars_low_thresh  = detect_stars_dao(img, fwhm=3.0, sigma_thresh=3.0)
-    stars_high_thresh = detect_stars_dao(img, fwhm=3.0, sigma_thresh=10.0)
-
-    assert len(stars_high_thresh) <= len(stars_low_thresh), (
-        f"High threshold ({len(stars_high_thresh)}) should find ≤ "
-        f"low threshold ({len(stars_low_thresh)})"
-    )

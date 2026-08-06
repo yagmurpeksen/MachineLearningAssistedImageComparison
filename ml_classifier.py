@@ -1,17 +1,3 @@
-"""
-ml_classifier.py
-================
-Machine learning components:
-  - Hand-crafted feature extraction (Deep-TAO / Gómez et al. 2020 approach)
-  - TransientClassifier  : user-labeled supervised Random Forest
-  - Isolation Forest     : unsupervised anomaly detection
-  - extract_deeptao_features : 44-dimensional vector for pre-trained model
-
-Dependencies
-------------
-  - detection.py   : bg_subtracted_flux, calculate_star_snr
-  - scikit-learn   : optional (controlled via ML_AVAILABLE)
-"""
 
 import numpy as np
 from detection import bg_subtracted_flux, calculate_star_snr
@@ -26,22 +12,10 @@ except ImportError:
     ML_AVAILABLE = False
 
 
-# ════════════════════════════════════════════════════════════════
-#  DEEP-TAO FEATURE EXTRACTION
-#  Identical computation to train_model.py → compatible with the pre-trained model
-# ════════════════════════════════════════════════════════════════
+#Feature extraction
 
 def _extract_single_frame_feats(cutout):
-    """
-    Extracts 18 statistical features from a 64x64 cutout.
 
-    Features: mean, std, peak, min, median, skew, kurt,
-              p25, p75, p90, p99,
-              conc_inner, conc_middle, conc_outer,
-              snr, signal, bg, radial_profile_slope
-
-    Identical to train_model.py::extract_single_frame.
-    """
     if cutout is None or cutout.size == 0:
         return np.zeros(18)
     data = cutout.astype(float)
@@ -49,7 +23,7 @@ def _extract_single_frame_feats(cutout):
     if np.all(flat == 0):
         return np.zeros(18)
 
-    mean = np.mean(flat);  std = np.std(flat) + 1e-9
+    mean = np.mean(flat);  std = np.std(flat) + 1e-9                    #These values calculated with numpy.
     peak = np.max(flat);   mn  = np.min(flat)
     med  = np.median(flat)
     skew = float(np.mean(((flat - mean) / std) ** 3))
@@ -62,30 +36,31 @@ def _extract_single_frame_feats(cutout):
     h, w   = data.shape
     cy, cx = h // 2, w // 2
     yy, xx = np.mgrid[0:h, 0:w]
-    dist   = np.sqrt((xx - cx)**2 + (yy - cy)**2)
+    dist   = np.sqrt((xx - cx)**2 + (yy - cy)**2)   #The each pixel's distance to center
 
-    inner  = float(data[dist <= 8].sum())
-    middle = float(data[(dist > 8) & (dist <= 16)].sum())
-    outer  = float(data[dist > 16].sum())
-    total  = inner + middle + outer + 1e-9
-    conc_inner  = inner  / total
+    inner  = float(data[dist <= 8].sum())   #Sum of pixels inside of r=8px
+    middle = float(data[(dist > 8) & (dist <= 16)].sum())  #Sum of pixels between of r=8px, r=16px
+    outer  = float(data[dist > 16].sum())    #Sum of pixels except sum of r=16px
+    total  = inner + middle + outer + 1e-9  
+    #The fraction of the total brightness contained within its respective region.
+    conc_inner  = inner  / total    
     conc_middle = middle / total
     conc_outer  = outer  / total
 
     bg_mask = dist > 20
-    bg      = float(np.median(data[bg_mask])) if bg_mask.any() else 0.0
+    bg      = float(np.median(data[bg_mask])) if bg_mask.any() else 0.0 
     bg_std  = float(np.std(data[bg_mask])) + 1e-9 if bg_mask.any() else 1.0
     n_inner = int((dist <= 8).sum())
-    signal  = max(inner - bg * n_inner, 0.0)
-    snr     = signal / (bg_std * np.sqrt(n_inner) + 1e-9)
+    signal  = max(inner - bg * n_inner, 0.0)    #Flux
+    snr     = signal / (bg_std * np.sqrt(n_inner) + 1e-9)   #Signal to noise ratio
 
-    r_bins  = np.arange(0, 32, 4)
+    r_bins  = np.arange(0, 32, 4)   #Checks if the circles every 4px, the fluxes decreases. This feature belongs to a star, not to a noise. 
     profile = []
     for r0, r1 in zip(r_bins[:-1], r_bins[1:]):
         ring = data[(dist >= r0) & (dist < r1)]
         profile.append(float(np.mean(ring)) if ring.size > 0 else 0.0)
     slope = (float(np.polyfit(range(len(profile)), profile, 1)[0])
-             if len(profile) > 1 else 0.0)
+            if len(profile) > 1 else 0.0)
 
     return np.array([
         mean, std, peak, mn, med, skew, kurt,
@@ -96,51 +71,32 @@ def _extract_single_frame_feats(cutout):
 
 
 def _extract_subtraction_features(cutout_early, cutout_late):
-    """
-    Extracts 10 features from the difference image (late - early).
-
-    Applies the standard astronomical image subtraction:
-    a real transient appears as a clean, round, Gaussian point source in the
-    difference image; a variable star leaves a residual (residual/dipole).
-
-    Features (10 dimensions):
-      diff_peak        — largest positive pixel in the difference cutout
-      diff_peak_neg    — most negative pixel (indicator of dipole residual)
-      diff_snr         — central signal / edge noise
-      diff_symmetry    — positive pixel fraction (1=entirely new source, 0=entirely negative)
-      diff_center_flux — net flux within central 8px
-      late_ellipticity — roundness of the late source (0=round, 1=elongated)
-      late_fwhm        — estimated FWHM (image distortion / noise indicator)
-      late_moment_ratio— Ixx/Iyy ratio (shape symmetry)
-      bg_change        — relative change in background level
-      bg_gradient      — background gradient magnitude (indicator of nearby bright source)
-    """
     h, w   = cutout_early.shape
     cy, cx = h // 2, w // 2
     yy, xx = np.mgrid[0:h, 0:w]
-    dist   = np.sqrt((xx - cx)**2 + (yy - cy)**2)
+    dist   = np.sqrt((xx - cx)**2 + (yy - cy)**2)   #The each pixel's distance to center
 
-    # ── Difference image ──────────────────────────────────────────
+    #Difference image 
     diff = cutout_late.astype(float) - cutout_early.astype(float)
 
-    diff_peak     = float(diff.max())
-    diff_peak_neg = float(diff.min())          # negative means dipole residual present
+    diff_peak     = float(diff.max())           #Max pixel on difference
+    diff_peak_neg = float(diff.min())          #Min pixel on difference
 
     # Edge region noise
-    edge_mask = dist > (min(h, w) // 2 - 4)
-    bg_noise  = float(np.std(diff[edge_mask])) + 1e-9
-    center_flux = float(diff[dist <= 8].sum())
+    edge_mask = dist > (min(h, w) // 2 - 4) #28 px away from the star : only noise and bg
+    bg_noise  = float(np.std(diff[edge_mask])) + 1e-9   #1e-9 prevents dividing to 0
+    center_flux = float(diff[dist <= 8].sum())  
     diff_snr    = center_flux / (bg_noise * np.sqrt(int((dist <= 8).sum())) + 1e-9)
 
     # Positive pixel fraction (1 = entirely new source, 0 = entirely subtraction residual)
-    diff_symmetry = float((diff > 0).sum()) / max(diff.size, 1)
+    diff_symmetry = float((diff > 0).sum()) / max(diff.size, 1) 
     diff_center_flux = center_flux
 
     # ── PSF shape of the late source (2nd moments) ───────────────
-    late = cutout_late.astype(float)
+    late = cutout_late.astype(float)    #Converts the image float64
     inner_mask = dist <= 12
     total_flux = late[inner_mask].sum() + 1e-9
-    w_x   = float((late[inner_mask] * xx[inner_mask]).sum()) / total_flux
+    w_x   = float((late[inner_mask] * xx[inner_mask]).sum()) / total_flux   #Finds the center of gravity
     w_y   = float((late[inner_mask] * yy[inner_mask]).sum()) / total_flux
     dx    = xx[inner_mask] - w_x
     dy    = yy[inner_mask] - w_y
@@ -149,7 +105,7 @@ def _extract_subtraction_features(cutout_early, cutout_late):
     Ixy   = float((late[inner_mask] * dx * dy).sum()) / total_flux
 
     # Ellipticity: 0 = round (point source), 1 = fully elongated
-    eigval_sum  = Ixx + Iyy
+    eigval_sum  = Ixx + Iyy                                              #Define the shape of the star
     eigval_diff = np.sqrt(max((Ixx - Iyy)**2 + 4 * Ixy**2, 0.0))
     lam_max     = (eigval_sum + eigval_diff) / 2.0
     lam_min     = (eigval_sum - eigval_diff) / 2.0
@@ -168,9 +124,9 @@ def _extract_subtraction_features(cutout_early, cutout_late):
     # Background gradient: average difference in horizontal and vertical direction
     half = h // 2
     grad_y = abs(float(late[bg_mask & (yy > half)].mean() if (bg_mask & (yy > half)).any() else 0.0) -
-                 float(late[bg_mask & (yy < half)].mean() if (bg_mask & (yy < half)).any() else 0.0))
+                float(late[bg_mask & (yy < half)].mean() if (bg_mask & (yy < half)).any() else 0.0))
     grad_x = abs(float(late[bg_mask & (xx > half)].mean() if (bg_mask & (xx > half)).any() else 0.0) -
-                 float(late[bg_mask & (xx < half)].mean() if (bg_mask & (xx < half)).any() else 0.0))
+                float(late[bg_mask & (xx < half)].mean() if (bg_mask & (xx < half)).any() else 0.0))
     bg_gradient = float(np.sqrt(grad_x**2 + grad_y**2))
 
     return np.array([
@@ -181,21 +137,10 @@ def _extract_subtraction_features(cutout_early, cutout_late):
 
 
 def extract_deeptao_features(img_early, cx_e, cy_e,
-                              img_late,  cx_l, cy_l, size=64):
-    """
-    Extracts a 54-dimensional change feature vector.
-
-    Structure: [early_18] + [late_18] + [delta_8] + [subtraction_10]  = 54 dimensions
-
-    Added subtraction features (v2):
-      diff_peak, diff_peak_neg, diff_snr, diff_symmetry, diff_center_flux,
-      late_ellipticity, late_fwhm, late_moment_ratio, bg_change, bg_gradient
-
-    Identical to train_model.py::extract_change_features.
-    """
+                            img_late,  cx_l, cy_l, size=64):
     def _crop(img, cx, cy):
         h, w = img.shape
-        half = size // 2
+        half = size // 2    # 64 // 2 = 32
         y0 = max(0, int(cy) - half); y1 = min(h, int(cy) + half)
         x0 = max(0, int(cx) - half); x1 = min(w, int(cx) + half)
         return img[y0:y1, x0:x1]
@@ -235,20 +180,11 @@ def extract_deeptao_features(img_early, cx_e, cy_e,
     return np.concatenate([f_early, f_late, delta, f_sub])  # 18+18+8+10 = 54 dimensions
 
 
-# ════════════════════════════════════════════════════════════════
+
 #  SUPERVISED CLASSIFIER  (user-labeled)
-# ════════════════════════════════════════════════════════════════
+
 
 class TransientClassifier:
-    """
-    Supervised Random Forest classifier for transient vs. artifact.
-
-    User labels events in the GUI → collects samples via add_sample()
-    → model is trained with train() → predictions made with predict().
-
-    Model is saved to user_model.joblib and persists across sessions.
-    """
-
     def __init__(self):
         self._samples = []   # list of (feature_vector, label)
         self._model   = None
@@ -257,17 +193,72 @@ class TransientClassifier:
         """Add a labeled sample. label: 0=artifact, 1=transient."""
         self._samples.append((np.array(features, dtype=np.float32), int(label)))
 
-    def train(self):
-        """Train the Random Forest on accumulated samples."""
+    def train(self, deeptao_data_dir=None):
+        """
+        Train the Random Forest on accumulated user samples.
+        If deeptao_data_dir is provided, Deep-TAO dataset is also included.
+        """
         if not ML_AVAILABLE:
             raise RuntimeError("scikit-learn is not installed.")
         if len(self._samples) < 4:
             raise ValueError("At least 4 labeled samples are required for training.")
-        X = np.array([s[0] for s in self._samples])
-        y = np.array([s[1] for s in self._samples])
-        X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
+
+        X_user = np.array([s[0] for s in self._samples])
+        y_user = np.array([s[1] for s in self._samples])
+
+        # Optionally load Deep-TAO data and combine with user labels
+        if deeptao_data_dir is None:
+            import os
+            _default = os.path.join(os.path.dirname(__file__), "deeptao_data")
+            if os.path.isdir(_default):
+                deeptao_data_dir = _default
+
+        X_all, y_all = X_user, y_user
+        if deeptao_data_dir and os.path.isdir(deeptao_data_dir):
+            try:
+                import os as _os
+                from astropy.io import fits as _fits
+                NON = ["NON"]
+                X_dt, y_dt = [], []
+                MAX_PER_CLASS = 40   # her sınıftan max 40 dosya — hız için
+                for cls in sorted(_os.listdir(deeptao_data_dir)):
+                    cls_dir = _os.path.join(deeptao_data_dir, cls)
+                    if not _os.path.isdir(cls_dir):
+                        continue
+                    label = 0 if cls in NON else 1
+                    cls_count = 0
+                    for fname in _os.listdir(cls_dir):
+                        if cls_count >= MAX_PER_CLASS:
+                            break
+                        fpath = _os.path.join(cls_dir, fname)
+                        try:
+                            with _fits.open(fpath) as hdul:
+                                frames = [hdu.data.astype(np.float32)
+                                          for hdu in hdul[1:]
+                                          if hdu.data is not None and np.ndim(hdu.data) == 2]
+                            if len(frames) < 2:
+                                continue
+                            early, late = frames[0], frames[-1]
+                            h, w = early.shape
+                            cx, cy = w // 2, h // 2
+                            fv = extract_deeptao_features(early, cx, cy, late, cx, cy,
+                                                          size=min(h, w))
+                            fv = np.nan_to_num(fv, nan=0.0, posinf=0.0, neginf=0.0)
+                            X_dt.append(fv)
+                            y_dt.append(label)
+                            cls_count += 1
+                        except Exception:
+                            continue
+                if X_dt:
+                    X_all = np.concatenate([X_user, np.array(X_dt)], axis=0)
+                    y_all = np.concatenate([y_user, np.array(y_dt)], axis=0)
+                    print(f"[Train] Combined: {len(y_user)} user + {len(y_dt)} Deep-TAO samples")
+            except Exception as e:
+                print(f"[Train] Deep-TAO data load failed: {e} — using user samples only")
+
+        X_all = np.nan_to_num(X_all, nan=0.0, posinf=0.0, neginf=0.0)
         self._model = RandomForestClassifier(n_estimators=100, random_state=42)
-        self._model.fit(X, y)
+        self._model.fit(X_all, y_all)
 
     def predict(self, features):
         """Returns (label, probability)."""
@@ -313,26 +304,16 @@ class TransientClassifier:
     def is_trained(self):
         return self._model is not None
 
-    @property
-    def n_samples(self):
-        return len(self._samples)
-
 
 # Application-wide shared singleton classifier instance
 classifier = TransientClassifier()
 
 
-# ════════════════════════════════════════════════════════════════
 #  HAND-CRAFTED FEATURES  (for Isolation Forest)
-# ════════════════════════════════════════════════════════════════
+
 
 def extract_cutout_features(img, cx, cy, size=32):
-    """
-    Extracts 9 statistical features from around a star.
 
-    (mean, std, peak, skew, concentration, inner_flux,
-     outer_flux, bg, snr_factor)
-    """
     h, w = img.shape
     half = size // 2
     y0 = max(0, int(cy) - half); y1 = min(h, int(cy) + half)
@@ -357,17 +338,12 @@ def extract_cutout_features(img, cx, cy, size=32):
     snr_f = peak / std
 
     return np.array([mean, std, peak, skew, concentration,
-                     inner, outer, bg, snr_f])
+                    inner, outer, bg, snr_f])
 
 
 def extract_pair_features(img1, img2, stars1, stars2, matched, idx,
-                           r_inner=4, r_outer=8):
-    """
-    Full ML feature vector for a matched star pair.
+                r_inner=4, r_outer=8):
 
-    Vector: [9 features img1] + [9 features img2] +
-            [flux_ratio, log_flux_ratio, snr1, snr2, |dx|, |dy|, dist]
-    """
     i, j, dx, dy, dist = matched[idx]
     cx1, cy1 = stars1[i][0], stars1[i][1]
     cx2, cy2 = stars2[j][0], stars2[j][1]
@@ -386,23 +362,13 @@ def extract_pair_features(img1, img2, stars1, stars2, matched, idx,
     return np.concatenate([
         f1, f2,
         [flux_ratio, log_flux_ratio, snr1, snr2,
-         abs(dx), abs(dy), float(dist)]
+        abs(dx), abs(dy), float(dist)]
     ])
-
-
-# ════════════════════════════════════════════════════════════════
+    
+    
 #  ISOLATION FOREST  (unsupervised anomaly score)
-# ════════════════════════════════════════════════════════════════
 
 def run_isolation_forest(features, contamination=0.05):
-    """
-    Computes anomaly scores using Isolation Forest.
-
-    No labels required → runs immediately after comparison.
-    Returns: score array (higher = more anomalous, normalized to 0-1)
-
-    contamination : expected anomaly fraction (default 5%)
-    """
     if not ML_AVAILABLE or len(features) < 5:
         return np.zeros(len(features))
 
@@ -411,7 +377,7 @@ def run_isolation_forest(features, contamination=0.05):
     X_scaled = scaler.fit_transform(X)
 
     clf = IsolationForest(contamination=contamination,
-                          n_estimators=100, random_state=42)
+                        n_estimators=100, random_state=42)
     clf.fit(X_scaled)
 
     raw    = clf.score_samples(X_scaled)

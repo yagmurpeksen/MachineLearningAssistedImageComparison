@@ -46,7 +46,6 @@ from detection import (                                           # noqa: F401
     detect_moving_outliers,
     detect_moving_from_unmatched,
     bg_subtracted_flux,
-    calculate_star_snr,
     filter_stars_by_snr,
     detect_brightness_outliers,
     normalize_pair_joint,
@@ -55,7 +54,6 @@ from detection import (                                           # noqa: F401
 
 from ml_classifier import (                                       # noqa: F401
     ML_AVAILABLE,
-    TransientClassifier,
     classifier,
     extract_deeptao_features,
     extract_pair_features,
@@ -66,8 +64,7 @@ from ml_classifier import (                                       # noqa: F401
 if ML_AVAILABLE:
     import joblib
 
-from photometry import (                                          # noqa: F401
-    _lookup_sat_mags_from_catalog,
+from photometry import (
     _try_photometry_zp,
 )
 
@@ -152,10 +149,9 @@ class ImageComparisonApp:
         self.img1 = self.img2 = None
         self.img1_path = self.img2_path = None
         self.fits_raw1 = self.fits_raw2 = None   # original float32 FITS data
-        self.fits_info1 = self.fits_info2 = {}   # header info
         self.fits_header1 = self.fits_header2 = None  # full FITS header (for WCS)
-        self.phot_zp1 = self.phot_zp2 = None    # photometry zero point
-        self.phot_n_cal1 = self.phot_n_cal2 = 0
+        self.phot_zp1    = None   # photometry zero point
+        self.phot_n_cal1 = 0
         self.mode       = tk.StringVar(value="both")
         # Analysis result storage (for labeling and redraws)
         self.last_brightened = []
@@ -165,9 +161,8 @@ class ImageComparisonApp:
         self.last_stars2     = []
         self.img1_n = None
         self.img2_n = None
-        self.cmap   = tk.StringVar(value="gray")
         # Parameters
-        self.p_thr_pct    = tk.DoubleVar(value=97.0)
+        self.p_thr_pct    = tk.DoubleVar(value=95.0)
         self.p_min_area   = tk.IntVar(value=3)
         self.p_max_area   = tk.IntVar(value=2000)
         self.p_min_peak   = tk.IntVar(value=20)
@@ -181,7 +176,7 @@ class ImageComparisonApp:
         self.p_r_outer    = tk.IntVar(value=8)
         self.p_min_flux   = tk.DoubleVar(value=50.0)
         self.p_flux_ratio_thr = tk.DoubleVar(value=1.5)
-        self.p_min_snr        = tk.DoubleVar(value=1.0)
+        self.p_min_snr        = tk.DoubleVar(value=3.0)
         # DAO detection (sigma-clipped threshold for FITS)
         self.p_use_dao        = tk.BooleanVar(value=True)
         self.p_dao_fwhm       = tk.DoubleVar(value=3.0)
@@ -189,6 +184,7 @@ class ImageComparisonApp:
         self.p_use_ml         = tk.BooleanVar(value=False)
         self._catalog_busy    = False
         self._analyze_busy    = False
+        self._main_canvas     = None      # FigureCanvasTkAgg referansı (GC thread safety)
         self.create_widgets()
 
     def create_widgets(self):
@@ -218,17 +214,6 @@ class ImageComparisonApp:
         self.btn_label = mkbtn("Label Events", self.open_label_window, "#8e44ad", state=tk.DISABLED)
         self.btn_train = mkbtn("Train Model", self.train_model, "#c0392b", state=tk.DISABLED)
         self.btn_alerce = mkbtn("ALeRCE Lookup", self.open_alerce_window, "#1abc9c", state=tk.DISABLED)
-
-        # ── Colormap selector ──
-        tk.Label(bf, text="  Colormap:", font=("Arial", 10),
-                 bg="#1a1a2e", fg="#bdc3c7").pack(side=tk.LEFT, padx=(12, 2))
-        cmaps = ["gray", "hot", "inferno", "plasma", "viridis", "magma", "cividis"]
-        cmap_menu = tk.OptionMenu(bf, self.cmap, *cmaps)
-        cmap_menu.config(font=("Arial", 10), bg="#2c3e50", fg="white",
-                         activebackground="#3d5166", activeforeground="white",
-                         highlightthickness=0, bd=0)
-        cmap_menu["menu"].config(bg="#2c3e50", fg="white", font=("Arial", 10))
-        cmap_menu.pack(side=tk.LEFT, padx=3)
 
         tk.Label(bf, text="  Mode:", font=("Arial", 10),
                  bg="#1a1a2e", fg="#bdc3c7").pack(side=tk.LEFT, padx=(12, 2))
@@ -465,13 +450,11 @@ class ImageComparisonApp:
                 # H_wcs to compose with RANSAC result
                 _wcs_H = np.float32([[1, 0, _sx], [0, 1, _sy]])
                 _ref_img2 = img2_wcs_n
-                _ref_flux2_rs = flux2_wcs
             else:
                 dao2_for_align = detect_stars_dao(
                     flux2_rs, fwhm=_dao_fwhm, sigma_thresh=_dao_sigma,
                     min_area=p["min_area"], max_area=p["max_area"])
                 _ref_img2 = img2r_n
-                _ref_flux2_rs = flux2_rs
 
             status("Aligning (DAO stars)...")
             img2_aligned, H_resid, align_method = star_affine_align(
@@ -533,9 +516,9 @@ class ImageComparisonApp:
         status("Calculating SNR...")
         ri, ro = p["r_inner"], p["r_outer"]
         min_snr = p["min_snr"]
-        stars1, snr_all1, snr_kept1 = filter_stars_by_snr(
+        stars1, _, snr_kept1 = filter_stars_by_snr(
             stars1_raw, img1_n, min_snr, ri, ro)
-        stars2, snr_all2, snr_kept2 = filter_stars_by_snr(
+        stars2, _, snr_kept2 = filter_stars_by_snr(
             stars2_raw, img2_aligned, min_snr, ri, ro)
 
         diff = cv.absdiff(img1_n, img2_aligned)
@@ -685,7 +668,7 @@ class ImageComparisonApp:
 
         moving = []
         for idx in moving_idx:
-            i, j, dx, dy, dist = matched[idx]
+            i, j, dx, dy, _ = matched[idx]
             moving.append({
                 "x1": stars1[i][0], "y1": stars1[i][1],
                 "x2": stars2[j][0], "y2": stars2[j][1],
@@ -772,12 +755,24 @@ class ImageComparisonApp:
                     r["pt_label"] = 0
                     r["pt_prob"]  = 0.0
 
+        # ── Print ML probabilities to terminal ──
+        all_cands = sorted(brightened + dimmed,
+                           key=lambda x: abs(x.get("change_pct", 0)), reverse=True)
+        print("\n[ML Probabilities] top candidates by |change_pct|:")
+        for r in all_cands[:30]:
+            pct   = r.get("change_pct", 0)
+            pt    = r.get("pt_prob", None)
+            um    = r.get("ml_prob", None)
+            x1, y1 = int(r.get("x1", 0)), int(r.get("y1", 0))
+            pt_str = f"{pt:.3f}" if pt is not None else "N/A"
+            um_str = f"{um:.3f}" if um is not None else "N/A"
+            print(f"  ({x1:4d},{y1:4d})  pct={pct:+10.1f}%  pretrained={pt_str}  user_ml={um_str}")
+
         # ── ML Filter: Remove non-transients ──
         # If user model is trained, it takes priority; otherwise pretrained Deep-TAO.
         # label = 1 → transient → keep  |  label = 0 → non-transient → remove
         if use_ml_filter:
             status("ML filtering...")
-            n_before = len(brightened) + len(dimmed)
             if classifier.is_trained:
                 brightened = [r for r in brightened
                               if r.get("ml_label", 1) == 1]
@@ -788,8 +783,6 @@ class ImageComparisonApp:
                               if r.get("pt_label", 1) == 1]
                 dimmed     = [r for r in dimmed
                               if r.get("pt_label", 1) == 1]
-            n_after    = len(brightened) + len(dimmed)
-            n_filtered = n_before - n_after
 
         draw = dict(
             img1_n=img1_n, img2_n=img2_aligned, stars1=stars1, stars2=stars2,
@@ -851,6 +844,7 @@ class ImageComparisonApp:
               unm1, unm2, matched, med_dx, med_dy, thr_r, residuals,
               changes_arr, mode):
 
+        self._main_canvas = None          # eski canvas'ı main thread'de serbest bırak
         for w in self.canvas_frame.winfo_children(): w.destroy()
         BG = "#0f0f23"
 
@@ -866,7 +860,7 @@ class ImageComparisonApp:
         show1, show2 = self._stretch_pair_for_display(img1_n, img2_n)
 
         # ── Frame 1
-        axes[ax_i].imshow(show1, cmap=self.cmap.get(), vmin=0, vmax=255)
+        axes[ax_i].imshow(show1, cmap="gray", vmin=0, vmax=255)
         axes[ax_i].set_title(f"Frame 1  ({len(stars1)} stars)", color="white", fontsize=10, fontweight="bold")
         for s in disp1:
             axes[ax_i].add_patch(plt.Circle((s[0],s[1]), min(18, max(3, np.sqrt(s[2]) * 0.5)),
@@ -874,7 +868,7 @@ class ImageComparisonApp:
         ax_i += 1
 
         # ── Frame 2
-        axes[ax_i].imshow(show2, cmap=self.cmap.get(), vmin=0, vmax=255)
+        axes[ax_i].imshow(show2, cmap="gray", vmin=0, vmax=255)
         axes[ax_i].set_title(f"Frame 2 (aligned)  ({len(stars2)} stars)", color="white", fontsize=10, fontweight="bold")
         for s in disp2:
             axes[ax_i].add_patch(plt.Circle((s[0],s[1]), min(18, max(3, np.sqrt(s[2]) * 0.5)),
@@ -913,7 +907,7 @@ class ImageComparisonApp:
 
         # ── Moving panel
         if mode in ("moving", "both"):
-            axes[ax_i].imshow(img1_n, cmap=self.cmap.get(), vmin=0, vmax=255)
+            axes[ax_i].imshow(img1_n, cmap="gray", vmin=0, vmax=255)
             axes[ax_i].set_title(
                 f"Moving Objects  ({len(moving)})",
                 color="white", fontsize=10, fontweight="bold")
@@ -937,7 +931,7 @@ class ImageComparisonApp:
 
         # ── Brightness panel
         if mode in ("brightness", "both"):
-            axes[ax_i].imshow(img1_n, cmap=self.cmap.get(), vmin=0, vmax=255)
+            axes[ax_i].imshow(img1_n, cmap="gray", vmin=0, vmax=255)
             axes[ax_i].set_title(
                 f"Brightness Changes  ({len(brightened)}↑  {len(dimmed)}↓)",
                 color="white", fontsize=10, fontweight="bold")
@@ -973,11 +967,8 @@ class ImageComparisonApp:
             # Brightened: bright orange filled glow + outer ring + label
             for k, r in enumerate(brightened):
                 cx, cy = r["x1"], r["y1"]
-                ml  = r.get("ml_score", 0.0)
-                is_transient = r.get("pt_label", r.get("ml_label", -1)) == 1
-                lw  = 3.5 if (ml > 0.7 or is_transient) else 2.2
                 axes[ax_i].add_patch(plt.Circle((cx,cy), 12,
-                    color="#ff6b35", fill=False, lw=lw, alpha=0.95, zorder=5))
+                    color="#ff6b35", fill=False, lw=2.2, alpha=0.95, zorder=5))
                 axes[ax_i].add_patch(plt.Circle((cx,cy), 4,
                     color="#ff6b35", fill=True, alpha=0.85, zorder=6))
                 axes[ax_i].text(cx+14, cy-8,
@@ -988,11 +979,8 @@ class ImageComparisonApp:
             # Dimmed: blue-white ring + label
             for k, r in enumerate(dimmed):
                 cx, cy = r["x1"], r["y1"]
-                ml  = r.get("ml_score", 0.0)
-                is_transient = r.get("pt_label", r.get("ml_label", -1)) == 1
-                lw  = 3.5 if (ml > 0.7 or is_transient) else 2.2
                 axes[ax_i].add_patch(plt.Circle((cx,cy), 12,
-                    color="#74b9ff", fill=False, lw=lw, alpha=0.95, zorder=5))
+                    color="#74b9ff", fill=False, lw=2.2, alpha=0.95, zorder=5))
                 axes[ax_i].add_patch(plt.Circle((cx,cy), 4,
                     color="#74b9ff", fill=True, alpha=0.85, zorder=6))
                 axes[ax_i].text(cx+14, cy-8,
@@ -1026,6 +1014,7 @@ class ImageComparisonApp:
         canvas.draw()
         canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
         self.fig = fig
+        self._main_canvas = canvas        # referansı tut — background thread GC etmesin
 
     def _update_stats(self, method, n1, n2, n_match, moving, brightened, dimmed,
                       n_unm1, n_unm2, med_dx, med_dy, thr_r, residuals,

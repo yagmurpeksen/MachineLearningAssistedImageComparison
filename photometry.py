@@ -198,14 +198,14 @@ def _try_photometry_zp(header, stars, flux_img, r_inner=6, r_outer=12, max_stars
                      row_limit=400, timeout=_CATALOG_QUERY_TIMEOUT)
         cat_raw = viz.query_region(cen, radius=12 * u.arcmin, catalog='APASS')
         if not cat_raw or len(cat_raw) == 0:
-            return None, 0
+            print("[APASS] query returned empty"); return None, 0
         cat = cat_raw[0]
         try:
             cat = cat[~cat['Vmag'].data.mask]
         except Exception:
             pass
         if len(cat) < 5:
-            return None, 0
+            print(f"[APASS] too few catalog stars: {len(cat)}"); return None, 0
 
         # Full-field ZTF has tens of thousands of stars → brightest subset is sufficient for APASS ZP
         if len(stars) > max_stars:
@@ -226,6 +226,7 @@ def _try_photometry_zp(header, stars, flux_img, r_inner=6, r_outer=12, max_stars
         idx, sep, _ = fit_sc.match_to_catalog_sky(cat_sc)
         ok = sep.arcsec < 5.0
 
+        ok = sep.arcsec < 5.0
         if ok.sum() < 5:
             return None, 0
 

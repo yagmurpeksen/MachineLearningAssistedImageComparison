@@ -31,6 +31,7 @@ args = [
     f"--add-data={os.path.join(ROOT, 'ml_classifier.py')}{os.pathsep}.",
     f"--add-data={os.path.join(ROOT, 'fits_loader.py')}{os.pathsep}.",
     f"--add-data={os.path.join(ROOT, 'photometry.py')}{os.pathsep}.",
+    f"--add-data={os.path.join(ROOT, 'alerce_query.py')}{os.pathsep}.",
 
     # ── Standard libraries ───────────────────────────────────────
     "--hidden-import=tkinter",
@@ -58,6 +59,8 @@ args = [
     "--hidden-import=astropy.wcs",
     "--hidden-import=astroquery",
     "--hidden-import=astroquery.vizier",
+    "--hidden-import=requests",
+    "--hidden-import=alerce_query",
     "--hidden-import=PIL",
     "--hidden-import=PIL.Image",
 
