@@ -73,7 +73,11 @@ python benchmark.py
 python benchmark.py --no-alerce   # ALeRCE API testini atla
 ```
 
-Çıktı: `report_figures/benchmark.png` (klasör yoksa oluşturulur). Benchmark, yerel FITS çiftlerinin varlığına bağlıdır; eksik dosyalar atlanır.
+Çıktı: `report_figures/benchmark.png` (klasör yoksa oluşturulur). Benchmark şu yerel FITS çiftlerini kullanır; `*.fits` dosyaları repoda olmadığından eksik olan çiftler atlanır:
+
+- `sn_target/AT2020xnd_balanced/pre_sn.fits`, `post_sn.fits` — gerçek ZTF çifti (IRSA'dan indirilir, aşağıya bakın)
+- `moving_object/epoch1.fits`, `epoch2.fits` — hareketli cisim senaryosu (yerel, isteğe bağlı)
+- `test_epoch1.fits`, `test_epoch2.fits` — sentetik test çifti (yerel, isteğe bağlı)
 
 ---
 
@@ -83,10 +87,8 @@ GUI ve ALeRCE ile gerçekçi deneme için **IRSA tam alan** ZTF `sciimg` (~35–
 
 | Klasör | Ne için? |
 |--------|----------|
-| `sn_target/AT2020xnd_short/` | **Önerilen** — AT2020xnd (ZTF20acigmel), yakın epoch; `target.json` içinde tarih/koordinat |
+| `sn_target/AT2020xnd_balanced/` | **Önerilen** — AT2020xnd (ZTF20acigmel); benchmark varsayılan çifti |
 | `sn_target/AT2020xnd/` | Uzun baseline (2019 / 2020) — daha zor senaryo |
-| `sn_target/AT2020xnd_balanced/` | Benchmark varsayılan çifti |
-| `sn_target/fink_ZTF*/` | Yalnızca küçük kesit metadata + `.npy` (GUI tam alan testi için uygun değil) |
 
 Her `sn_target/<isim>/` klasörüne IRSA'dan indirdiğiniz tam alan FITS'leri şu adlarla koyun:
 
